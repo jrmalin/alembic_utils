@@ -16,6 +16,9 @@ from sqlalchemy.schema import CreateIndex, Index
 from sqlalchemy.sql import visitors
 from sqlalchemy.sql.elements import BindParameter, TextClause
 
+from alembic_utils_extended.pg_materialized_view import PGMaterializedView
+from alembic_utils_extended.replaceable_entity import registry
+
 logger = logging.getLogger(__name__)
 
 # ``NULLS [NOT] DISTINCT`` on a unique index (PostgreSQL 15+) is a native
@@ -155,6 +158,15 @@ def compare_indexes(
 
         create_keys = model_keys - db_keys
         drop_keys = db_keys - model_keys
+
+        # Indexes on registered PGMaterializedViews are created inline by
+        # PGMaterializedView.render_post_create_entity as part of the CreateOp
+        # migration. Generating a separate CreateIndexOp here is redundant and
+        # incorrectly ordered for new MVs: the CONCURRENTLY index migration
+        # would run before the MV itself is created, causing "relation does not
+        # exist" failures.
+        mv_table_names = {entity.signature for entity in registry.entities() if isinstance(entity, PGMaterializedView)}
+        create_keys = {key for key in create_keys if key[0] not in mv_table_names}
 
         # Indexes present in both are assumed unchanged (identity-only diff).
 

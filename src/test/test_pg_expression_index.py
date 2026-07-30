@@ -17,6 +17,8 @@ from alembic_utils_extended.pg_expression_index import (
     _parse_indexdef,
     _truncate_identifier,
 )
+from alembic_utils_extended.pg_materialized_view import PGMaterializedView
+from alembic_utils_extended.replaceable_entity import register_entities
 from alembic_utils_extended.testbase import (
     TEST_VERSIONS_ROOT,
     run_alembic_command,
@@ -1072,3 +1074,47 @@ def test_nulls_not_distinct_autogen_is_idempotent(engine) -> None:
     contents = (TEST_VERSIONS_ROOT / "1_idem_nnd.py").read_text()
     assert "op.create_index" not in contents, f"Autogen re-emitted a create:\n{contents}"
     assert "op.drop_index" not in contents, f"Autogen re-emitted a drop:\n{contents}"
+
+
+def test_no_duplicate_create_index_for_new_materialized_view(engine) -> None:
+    """When a PGMaterializedView with indexes is registered AND the same indexes
+    appear in target_metadata as a Table of the same name (the pattern used by ORM
+    classes that back-reference an MV for queries), compare_indexes must NOT emit a
+    separate CreateIndexOp. The index is already created inline by
+    PGMaterializedView.render_post_create_entity as part of the CreateOp migration.
+    Without this guard the CONCURRENTLY index migration runs before the MV is created
+    and fails with "relation does not exist".
+    """
+    # Mirror the candid-api pattern: a SQLAlchemy Table in metadata with the same
+    # name and indexes as the PGMaterializedView (from __table_args__ on an ORM class).
+    metadata = MetaData()
+    mv_table = Table("test_mat_view", metadata, Column("c1", String), schema="DEV")
+    idx = Index("ix_test_mat_view_c1", mv_table.c.c1, unique=True)
+
+    mv = PGMaterializedView(
+        schema="DEV",
+        signature="test_mat_view",
+        definition="SELECT concat('https://something/', cast(x as text)) as c1 FROM generate_series(1,10) x",
+        with_data=True,
+        indexes=[idx],
+    )
+    register_entities([mv], entity_types=[PGMaterializedView])
+
+    run_alembic_command(
+        engine=engine,
+        command="revision",
+        command_kwargs={"autogenerate": True, "rev_id": "1", "message": "create_mv"},
+        target_metadata=metadata,
+        compare_indexes=True,
+    )
+
+    contents = (TEST_VERSIONS_ROOT / "1_create_mv.py").read_text()
+
+    # The MV creation should appear (from compare_registered_entities).
+    assert "op.create_entity" in contents
+    # The index should appear exactly once — from render_post_create_entity,
+    # not duplicated by a standalone compare_indexes CreateIndexOp.
+    assert contents.count("op.create_index") == 1, (
+        f"Expected exactly one op.create_index (from render_post_create_entity), "
+        f"got {contents.count('op.create_index')}:\n{contents}"
+    )
