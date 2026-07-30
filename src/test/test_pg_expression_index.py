@@ -1115,6 +1115,5 @@ def test_no_duplicate_create_index_for_new_materialized_view(engine) -> None:
     # The index should appear exactly once — from render_post_create_entity,
     # not duplicated by a standalone compare_indexes CreateIndexOp.
     assert contents.count("op.create_index") == 1, (
-        f"Expected exactly one op.create_index (from render_post_create_entity), "
-        f"got {contents.count('op.create_index')}:\n{contents}"
+        f"Expected exactly one op.create_index (from render_post_create_entity), " f"got {contents.count('op.create_index')}:\n{contents}"
     )
