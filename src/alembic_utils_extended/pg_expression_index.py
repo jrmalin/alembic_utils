@@ -16,6 +16,9 @@ from sqlalchemy.schema import CreateIndex, Index
 from sqlalchemy.sql import visitors
 from sqlalchemy.sql.elements import BindParameter, TextClause
 
+from alembic_utils_extended.pg_materialized_view import PGMaterializedView
+from alembic_utils_extended.replaceable_entity import registry
+
 logger = logging.getLogger(__name__)
 
 # ``NULLS [NOT] DISTINCT`` on a unique index (PostgreSQL 15+) is a native
@@ -128,6 +131,7 @@ def compare_indexes(
     include_index = autogen_context.opts.get("compare_indexes_include") or (lambda *args, **kw: True)
 
     observed_schemas: set[str | None] = {table.schema for table in target_metadata.tables.values()}
+    mv_table_names = {entity.signature for entity in registry.entities() if isinstance(entity, PGMaterializedView)}
 
     for schema_to_use in observed_schemas:
 
@@ -155,6 +159,8 @@ def compare_indexes(
 
         create_keys = model_keys - db_keys
         drop_keys = db_keys - model_keys
+
+        create_keys = {key for key in create_keys if key[0] not in mv_table_names}
 
         # Indexes present in both are assumed unchanged (identity-only diff).
 
