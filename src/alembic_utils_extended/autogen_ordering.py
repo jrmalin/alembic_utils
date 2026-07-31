@@ -15,6 +15,14 @@ running *before* the built-in table diff. Every comparator does
 ``upgrade_ops.ops`` ahead of ``CreateTableOp`` and the generated migration tries
 to create a trigger / function / index before the table it depends on.
 
+Additionally, within the fork's own comparators, ``compare_indexes`` and
+``compare_check_constraints`` are registered (via ``__init__.py`` imports) before
+``compare_registered_entities`` (registered when a ``ReplaceableEntity`` subclass
+is first imported). This means ``CreateIndexOp`` and ``CreateCheckConstraintOp``
+land in ``upgrade_ops.ops`` before ``CreateOp`` / ``ReplaceOp``, so naively
+preserving relative order within a single creates bucket would place indexes and
+constraints before the entities they depend on.
+
 (Before Alembic 1.18 the built-in comparators registered onto the shared
 dispatcher first, so creates were already ordered correctly — the bug is specific
 to the priority dispatcher, hence the version guard below.)
@@ -23,12 +31,15 @@ Fix
 ---
 Register a ``LAST``-priority ``"schema"`` comparator. It runs after every
 ``MEDIUM`` comparator (the built-in table diff included) and rewrites
-``upgrade_ops.ops`` as ``[library drops, stock ops, library creates]``:
+``upgrade_ops.ops`` as ``[library drops, stock ops, library entity creates,
+library index/constraint creates]``:
 
-* library **creates** move after all stock ops → tables/columns exist before the
-  entities/indexes/constraints that depend on them (upgrade correctness);
 * library **drops** move before all stock ops → dependents are dropped before the
   tables they hang off of.
+* library **entity creates** (views, functions, triggers, etc.) move after all
+  stock ops → tables/columns exist before the entities that depend on them.
+* library **index/constraint creates** move after entity creates → entities exist
+  before the indexes and constraints that depend on them (upgrade correctness).
 
 Downgrade is produced by ``upgrade_ops.reverse_into(downgrade_ops)`` *after* this
 comparator runs, so reordering the upgrade list makes both directions correct.
@@ -49,36 +60,37 @@ try:
 except ImportError:  # pragma: no cover - Alembic < 1.18 orders creates correctly already
     DispatchPriority = None
 
-# Top-level ops emitted by this library's comparators. They depend on the tables
-# and columns managed by stock Alembic, so on upgrade they must come after stock
-# ops and on downgrade before them. Stock Alembic nests its own index/constraint
-# ops inside ``ModifyTableOps``; only the fork appends these at the top level.
-_LIBRARY_CREATE_OPS = (CreateOp, ReplaceOp, ops.CreateIndexOp, ops.CreateCheckConstraintOp)
+_LIBRARY_ENTITY_CREATE_OPS = (CreateOp, ReplaceOp)
+_LIBRARY_INDEX_CONSTRAINT_CREATE_OPS = (ops.CreateIndexOp, ops.CreateCheckConstraintOp)
 _LIBRARY_DROP_OPS = (DropOp, ops.DropIndexOp, ops.DropConstraintOp)
 
 
 def reorder_upgrade_ops(upgrade_ops: ops.UpgradeOps) -> None:
-    """Rewrite ``upgrade_ops.ops`` to ``[library drops, stock ops, library creates]``."""
+    """Rewrite ``upgrade_ops.ops`` to
+    ``[library drops, stock ops, library entity creates, library index/constraint creates]``."""
     drops: list[MigrateOperation] = []
     stock: list[MigrateOperation] = []
-    creates: list[MigrateOperation] = []
+    entity_creates: list[MigrateOperation] = []
+    index_creates: list[MigrateOperation] = []
     for op in upgrade_ops.ops:
         if isinstance(op, _LIBRARY_DROP_OPS):
             drops.append(op)
-        elif isinstance(op, _LIBRARY_CREATE_OPS):
-            creates.append(op)
+        elif isinstance(op, _LIBRARY_ENTITY_CREATE_OPS):
+            entity_creates.append(op)
+        elif isinstance(op, _LIBRARY_INDEX_CONSTRAINT_CREATE_OPS):
+            index_creates.append(op)
         else:
             stock.append(op)
-    upgrade_ops.ops[:] = drops + stock + creates
+    upgrade_ops.ops[:] = drops + stock + entity_creates + index_creates
 
 
 if DispatchPriority is not None:
 
     @comparators.dispatch_for("schema", priority=DispatchPriority.LAST)
     def reorder_library_ops(
-        autogen_context: AutogenContext,
+        _autogen_context: AutogenContext,
         upgrade_ops: ops.UpgradeOps,
-        schemas: list[str | None],
+        _schemas: list[str | None],
     ) -> None:
         """Runs after all MEDIUM comparators; see the module docstring."""
         reorder_upgrade_ops(upgrade_ops)

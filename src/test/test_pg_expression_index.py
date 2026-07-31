@@ -1072,3 +1072,43 @@ def test_nulls_not_distinct_autogen_is_idempotent(engine) -> None:
     contents = (TEST_VERSIONS_ROOT / "1_idem_nnd.py").read_text()
     assert "op.create_index" not in contents, f"Autogen re-emitted a create:\n{contents}"
     assert "op.drop_index" not in contents, f"Autogen re-emitted a drop:\n{contents}"
+
+
+def test_mv_index_not_duplicated_by_compare_indexes(engine) -> None:
+    """compare_indexes must not emit a separate CreateIndexOp for an index that belongs
+    to a registered PGMaterializedView. render_post_create_entity already emits
+    op.create_index inline — a second op from compare_indexes would make the migration
+    fail (index already exists) or create a redundant migration file."""
+    from alembic_utils_extended.pg_materialized_view import PGMaterializedView
+    from alembic_utils_extended.replaceable_entity import register_entities
+
+    metadata = MetaData()
+    table = Table(
+        "test_mv",
+        metadata,
+        Column("id", Integer, primary_key=True),
+    )
+    idx = Index("ix_test_mv_id", table.c.id)
+
+    mv = PGMaterializedView(
+        schema="public",
+        signature="test_mv",
+        definition="SELECT 1 AS id FROM generate_series(1, 1)",
+        with_data=True,
+        indexes=[idx],
+    )
+    register_entities([mv], entity_types=[PGMaterializedView])
+
+    run_alembic_command(
+        engine=engine,
+        command="revision",
+        command_kwargs={"autogenerate": True, "rev_id": "1", "message": "mv_idx_dedup"},
+        target_metadata=metadata,
+        compare_indexes=True,
+    )
+
+    contents = (TEST_VERSIONS_ROOT / "1_mv_idx_dedup.py").read_text()
+
+    # render_post_create_entity produces exactly one op.create_index.
+    # compare_indexes must not add a second one for the same index.
+    assert contents.count("op.create_index") == 1, f"Expected 1 op.create_index (from entity create inline), found duplicates:\n{contents}"
