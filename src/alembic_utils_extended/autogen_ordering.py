@@ -31,9 +31,14 @@ Fix
 ---
 Register a ``LAST``-priority ``"schema"`` comparator. It runs after every
 ``MEDIUM`` comparator (the built-in table diff included) and rewrites
-``upgrade_ops.ops`` as ``[library drops, stock ops, library entity creates,
-library index/constraint creates]``:
+``upgrade_ops.ops`` as ``[library enum ops, library drops, stock ops, library
+entity creates, library index/constraint creates]``:
 
+* library **enum ops** move ahead of everything → an enum type and its labels
+  exist before any column, default, or entity that references them. Their
+  relative order is preserved, which matters: ``pg_enum`` plans a run of
+  ``ADD VALUE`` statements whose anchors depend on the preceding ones landing
+  first.
 * library **drops** move before all stock ops → dependents are dropped before the
   tables they hang off of.
 * library **entity creates** (views, functions, triggers, etc.) move after all
@@ -52,6 +57,7 @@ from alembic.autogenerate import comparators
 from alembic.autogenerate.api import AutogenContext
 from alembic.operations import MigrateOperation, ops
 
+from alembic_utils_extended.pg_enum_ops import AddEnumValueOp, CreateEnumTypeOp
 from alembic_utils_extended.reversible_op import CreateOp, DropOp, ReplaceOp
 
 try:
@@ -60,6 +66,7 @@ try:
 except ImportError:  # pragma: no cover - Alembic < 1.18 orders creates correctly already
     DispatchPriority = None
 
+_LIBRARY_ENUM_OPS = (CreateEnumTypeOp, AddEnumValueOp)
 _LIBRARY_ENTITY_CREATE_OPS = (CreateOp, ReplaceOp)
 _LIBRARY_INDEX_CONSTRAINT_CREATE_OPS = (ops.CreateIndexOp, ops.CreateCheckConstraintOp)
 _LIBRARY_DROP_OPS = (DropOp, ops.DropIndexOp, ops.DropConstraintOp)
@@ -67,13 +74,16 @@ _LIBRARY_DROP_OPS = (DropOp, ops.DropIndexOp, ops.DropConstraintOp)
 
 def reorder_upgrade_ops(upgrade_ops: ops.UpgradeOps) -> None:
     """Rewrite ``upgrade_ops.ops`` to
-    ``[library drops, stock ops, library entity creates, library index/constraint creates]``."""
+    ``[library enum ops, library drops, stock ops, library entity creates, library index/constraint creates]``."""
+    enum_ops: list[MigrateOperation] = []
     drops: list[MigrateOperation] = []
     stock: list[MigrateOperation] = []
     entity_creates: list[MigrateOperation] = []
     index_creates: list[MigrateOperation] = []
     for op in upgrade_ops.ops:
-        if isinstance(op, _LIBRARY_DROP_OPS):
+        if isinstance(op, _LIBRARY_ENUM_OPS):
+            enum_ops.append(op)
+        elif isinstance(op, _LIBRARY_DROP_OPS):
             drops.append(op)
         elif isinstance(op, _LIBRARY_ENTITY_CREATE_OPS):
             entity_creates.append(op)
@@ -81,7 +91,7 @@ def reorder_upgrade_ops(upgrade_ops: ops.UpgradeOps) -> None:
             index_creates.append(op)
         else:
             stock.append(op)
-    upgrade_ops.ops[:] = drops + stock + entity_creates + index_creates
+    upgrade_ops.ops[:] = enum_ops + drops + stock + entity_creates + index_creates
 
 
 if DispatchPriority is not None:

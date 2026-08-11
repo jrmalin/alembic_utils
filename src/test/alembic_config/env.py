@@ -15,6 +15,8 @@ fileConfig(config.config_file_name)
 
 target_metadata = config.attributes.get("target_metadata", MetaData())
 compare_check_constraints = config.attributes.get("compare_check_constraints", False)
+compare_enum_values = config.attributes.get("compare_enum_values", False)
+ignore_enum_label_removal = config.attributes.get("ignore_enum_label_removal", set())
 compare_indexes = config.attributes.get("compare_indexes", False)
 # Opt-in for tests that need stock table/column autogen (e.g. op-ordering tests
 # where an entity depends on a net-new column). Off by default so the rest of the
@@ -72,6 +74,8 @@ def run_migrations_online():
             include_object=include_object,
             include_name=include_name,
             compare_check_constraints=compare_check_constraints,
+            compare_enum_values=compare_enum_values,
+            ignore_enum_label_removal=ignore_enum_label_removal,
             compare_indexes=compare_indexes,
         )
 
