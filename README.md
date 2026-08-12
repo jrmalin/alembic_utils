@@ -64,6 +64,56 @@ context.configure(
 )
 ```
 
+### Monitor Native Enum Types
+
+Alembic does not diff enum labels. Adding a member to a Python `Enum` mapped with `sa.Enum(..., native_enum=True)`
+produces no migration at all, passes every other check, and then fails on the first write with
+`invalid input value for enum`.
+
+With `compare_enum_values=True`, `alembic_utils_extended` diffs every native enum type reachable from
+`target_metadata` against `pg_enum`:
+
+```python
+# migrations/env.py
+from alembic import context
+
+context.configure(
+    # ... other configurations ...
+    compare_enum_values=True,
+)
+```
+
+It emits two things, and nothing else:
+
+- **`ALTER TYPE ... ADD VALUE IF NOT EXISTS`** for labels the models declare and the database lacks. New labels are
+  positioned with `BEFORE`/`AFTER` so the PostgreSQL sort order — which is what `ORDER BY` on an enum column uses —
+  keeps matching the declaration order. Anchors are chosen only from labels that actually exist, so this still works
+  on a type whose overall order has already drifted.
+- **`CREATE TYPE`** for a type that does not exist yet *and* is used by a table that does. This covers a real gap:
+  `op.add_column` never emits `CREATE TYPE` (only `op.create_table` fires the event that does), so adding a
+  native-enum column to an existing table otherwise fails with `type ... does not exist`.
+
+Deliberately out of scope, because each needs an ACCESS EXCLUSIVE rewrite of every dependent table: rebuilding a type,
+removing a label (PostgreSQL has no `DROP VALUE`), reordering existing labels, and dropping a type that is no longer
+declared. A label present in the database but absent from the models raises `EnumLabelRemovedError` rather than
+generating anything, since it usually means a member was deleted out from under live rows.
+
+Because labels cannot be dropped, though, a long-lived schema accumulates dead ones that no migration can clear. Vouch
+for those a type at a time:
+
+```python
+context.configure(
+    # ... other configurations ...
+    compare_enum_values=True,
+    ignore_enum_label_removal={"some_legacy_type"},
+)
+```
+
+Listed types still get new labels added; they just stop raising on undeclared ones. Note this is per type, not per
+label — a *newly* removed label on a listed type is tolerated too.
+
+`native_enum` defaults to `True`, so a column that never mentions it is still covered.
+
 ### Monitor Indexes
 
 Alembic's built-in autogenerate on SQLAlchemy 1.4 mishandles several PostgreSQL index shapes — function expressions

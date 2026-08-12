@@ -42,6 +42,8 @@ def run_alembic_command(
     command_kwargs: dict[str, Any],
     target_metadata: MetaData | None = None,
     compare_check_constraints: bool = False,
+    compare_enum_values: bool = False,
+    ignore_enum_label_removal: set[str] | None = None,
     compare_indexes: bool = False,
     compare_tables: bool = False,
 ) -> str:
@@ -56,6 +58,10 @@ def run_alembic_command(
             alembic_cfg.attributes["target_metadata"] = target_metadata
         if compare_check_constraints:
             alembic_cfg.attributes["compare_check_constraints"] = compare_check_constraints
+        if compare_enum_values:
+            alembic_cfg.attributes["compare_enum_values"] = compare_enum_values
+        if ignore_enum_label_removal:
+            alembic_cfg.attributes["ignore_enum_label_removal"] = ignore_enum_label_removal
         if compare_indexes:
             alembic_cfg.attributes["compare_indexes"] = compare_indexes
         if compare_tables:
