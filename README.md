@@ -99,18 +99,18 @@ declared. A label present in the database but absent from the models raises `Enu
 generating anything, since it usually means a member was deleted out from under live rows.
 
 Because labels cannot be dropped, though, a long-lived schema accumulates dead ones that no migration can clear. Vouch
-for those a type at a time:
+for those individually:
 
 ```python
 context.configure(
     # ... other configurations ...
     compare_enum_values=True,
-    ignore_enum_label_removal={"some_legacy_type"},
+    ignore_enum_label_removal={"some_legacy_type": {"a_dead_label"}},
 )
 ```
 
-Listed types still get new labels added; they just stop raising on undeclared ones. Note this is per type, not per
-label — a *newly* removed label on a listed type is tolerated too.
+Exemptions are per label, not per type, so vouching for one dead label cannot hide the next removal on the same type.
+Listed types still get new labels added as normal.
 
 `native_enum` defaults to `True`, so a column that never mentions it is still covered.
 
