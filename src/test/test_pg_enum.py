@@ -260,8 +260,8 @@ def test_label_removed_from_models_raises(engine) -> None:
         )
 
 
-def test_label_removed_from_models_is_tolerated_when_the_type_is_ignored(engine) -> None:
-    """Dead labels cannot be dropped, so a consumer can vouch for a whole type instead."""
+def test_label_removed_from_models_is_tolerated_when_that_label_is_ignored(engine) -> None:
+    """Dead labels cannot be dropped, so a consumer can vouch for the specific ones."""
     metadata = MetaData()
     Table("t", metadata, Column("id", Integer, primary_key=True), Column("c", Enum("a", "c", name="letters")))
 
@@ -275,13 +275,34 @@ def test_label_removed_from_models_is_tolerated_when_the_type_is_ignored(engine)
         command_kwargs={"autogenerate": True, "rev_id": "1", "message": "ignored_orphan"},
         target_metadata=metadata,
         compare_enum_values=True,
-        ignore_enum_label_removal={"letters"},
+        ignore_enum_label_removal={"letters": {"b"}},
     )
 
     migration_contents = (TEST_VERSIONS_ROOT / "1_ignored_orphan.py").read_text()
 
     # The orphaned 'b' is tolerated, but a genuinely missing label is still added.
     assert """op.execute("ALTER TYPE letters ADD VALUE IF NOT EXISTS 'c' AFTER 'a'")""" in migration_contents
+
+
+def test_ignoring_one_label_does_not_ignore_another_on_the_same_type(engine) -> None:
+    """The point of per-label exemptions: vouching for one dead label must not hide the next removal."""
+    metadata = MetaData()
+    Table("t", metadata, Column("id", Integer, primary_key=True), Column("c", Enum("a", name="letters")))
+
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TYPE letters AS ENUM ('a', 'b', 'c')"))
+        connection.execute(text("CREATE TABLE t (id integer PRIMARY KEY, c letters)"))
+
+    # 'b' is vouched for; 'c' is not, so it still raises.
+    with pytest.raises(EnumLabelRemovedError, match=r"\['c'\]"):
+        run_alembic_command(
+            engine=engine,
+            command="revision",
+            command_kwargs={"autogenerate": True, "rev_id": "1", "message": "partial_exemption"},
+            target_metadata=metadata,
+            compare_enum_values=True,
+            ignore_enum_label_removal={"letters": {"b"}},
+        )
 
 
 def test_ignoring_one_type_does_not_ignore_another(engine) -> None:
@@ -299,7 +320,7 @@ def test_ignoring_one_type_does_not_ignore_another(engine) -> None:
             command_kwargs={"autogenerate": True, "rev_id": "1", "message": "other_orphan"},
             target_metadata=metadata,
             compare_enum_values=True,
-            ignore_enum_label_removal={"some_other_type"},
+            ignore_enum_label_removal={"some_other_type": {"b"}},
         )
 
 

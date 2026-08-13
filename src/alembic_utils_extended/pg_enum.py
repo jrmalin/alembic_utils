@@ -9,7 +9,8 @@ Opt in with ``context.configure(..., compare_enum_values=True)``, the same way `
 
 A label present in the database but absent from the models raises, since it usually means a python enum member was
 deleted out from under live rows. PostgreSQL cannot drop an enum label, though, so schemas accumulate dead ones that
-no migration can clear. Pass ``ignore_enum_label_removal={"some_type"}`` to tolerate them per type.
+no migration can clear. Pass ``ignore_enum_label_removal={"some_type": {"dead_label"}}`` to tolerate specific
+labels; anything not listed still raises, so an exemption cannot hide the next removal.
 
 Scope is deliberately narrow. It emits ``ALTER TYPE ... ADD VALUE`` for labels the models declare and the database
 lacks, and ``CREATE TYPE`` for a type that does not exist yet and will not be created implicitly. It never rebuilds a
@@ -20,7 +21,7 @@ your back.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass, field
 
 from alembic.autogenerate import comparators
@@ -174,7 +175,7 @@ def compare_enum_values(
         return
 
     inspector = autogen_context.inspector
-    ignore_label_removal = set(autogen_context.opts.get("ignore_enum_label_removal") or ())
+    ignore_label_removal: Mapping[str, Collection[str]] = autogen_context.opts.get("ignore_enum_label_removal") or {}
     default_schema = inspector.default_schema_name
 
     # Alias every default-schema type under `None` too, so an unqualified declaration resolves without a fallback.
@@ -200,16 +201,18 @@ def compare_enum_values(
                 upgrade_ops.ops.append(create_op)
             continue
 
+        tolerated = ignore_label_removal.get(declared_enum.name, ())
         orphans = [label for label in defined_labels if label not in declared_enum.labels]
-        if orphans and declared_enum.name not in ignore_label_removal:
+        unexpected = [label for label in orphans if label not in tolerated]
+        if unexpected:
             raise EnumLabelRemovedError(
-                f"Enum type {declared_enum.name!r} has label(s) {orphans} in the database that "
+                f"Enum type {declared_enum.name!r} has label(s) {unexpected} in the database that "
                 f"{declared_enum.describe_columns()} no longer declare. PostgreSQL cannot remove an enum label, "
-                "so this needs either the label(s) restored to the python enum, a full type rebuild, or the type "
-                "listed in the `ignore_enum_label_removal` option if the labels are known-dead."
+                "so this needs either the label(s) restored to the python enum, a full type rebuild, or the label(s) "
+                "listed under this type in the `ignore_enum_label_removal` option if they are known-dead."
             )
         if orphans:
-            logger.info("Ignoring undeclared label(s) %s on enum type %s", orphans, declared_enum.name)
+            logger.info("Ignoring known-dead label(s) %s on enum type %s", orphans, declared_enum.name)
 
         additions = plan_enum_value_additions(
             declared_enum.name,

@@ -43,7 +43,7 @@ def run_alembic_command(
     target_metadata: MetaData | None = None,
     compare_check_constraints: bool = False,
     compare_enum_values: bool = False,
-    ignore_enum_label_removal: set[str] | None = None,
+    ignore_enum_label_removal: dict[str, set[str]] | None = None,
     compare_indexes: bool = False,
     compare_tables: bool = False,
 ) -> str:
